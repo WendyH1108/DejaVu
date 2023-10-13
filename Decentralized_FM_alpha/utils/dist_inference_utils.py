@@ -48,14 +48,18 @@ def distributed_inference_mask_iter(args, pipeline, device, request_processor,
                                     client: CoordinatorInferenceHTTPClient = None):
     
     total_time = 0
-    if get_pipeline_parallel_rank() == 0:
+    input_dict = {}
+    label_dict = {}
+    # for i in range(args.num_layers):
+    #     input_dict
+    if get_pipeline_parallel_rank() == 0 and get_pipeline_parallel_rank() != pipeline.pipeline_group_size - 1:
         output_requests = []
         infer_data_loader = request_processor.get_dataloader(args.batch_size)
         for i, inputs in enumerate(infer_data_loader):
             input_ids = inputs['text'].to(device)
             attention_mask = inputs['attention_mask'].to(device)
             output_ids_list = []
-            current_iter_time = pipeline.inference_batch(input_ids, output_ids_list, attention_mask=attention_mask)
+            current_iter_time, input_dict, label_dict = pipeline.inference_batch(input_ids, output_ids_list, attention_mask=attention_mask, input_dict=input_dict, label_dict=label_dict)
             if i > 0:
                 total_time += current_iter_time
             if i >= args.num_iters-1:
@@ -63,14 +67,13 @@ def distributed_inference_mask_iter(args, pipeline, device, request_processor,
         averaged_time = total_time / (args.num_iters - 1 + 1e-9)
         print("Finished running ", args.num_iters,
               " iterations, averaged (exclude the first iter) run time:", averaged_time)
-            
     elif get_pipeline_parallel_rank() == pipeline.pipeline_group_size - 1:
         infer_data_loader = request_processor.get_dataloader(args.batch_size)
         for i, inputs in enumerate(infer_data_loader):
             input_ids = inputs['text'].to(device)
             attention_mask = inputs['attention_mask'].to(device)
             output_ids_list = []
-            current_iter_time = pipeline.inference_batch(input_ids, output_ids_list, attention_mask=attention_mask)
+            current_iter_time, input_dict, label_dict = pipeline.inference_batch(input_ids, output_ids_list, attention_mask=attention_mask, input_dict=input_dict, label_dict=label_dict)
             request_processor.add_result(inputs, output_ids_list, batch_time=current_iter_time)
             
             if client is not None:
@@ -85,18 +88,21 @@ def distributed_inference_mask_iter(args, pipeline, device, request_processor,
         
         # last node write
         request_processor.write_scenario_state()
-            
     else:
         infer_data_loader = request_processor.get_dataloader(args.batch_size)
         for i, inputs in enumerate(infer_data_loader):
             input_ids = inputs['text'].to(device)
             attention_mask = inputs['attention_mask'].to(device)
-            current_iter_time = pipeline.inference_batch(input_ids, attention_mask=attention_mask)
+            current_iter_time, input_dict, label_dict = pipeline.inference_batch(input_ids, attention_mask=attention_mask, input_dict=input_dict, label_dict=label_dict)
             if i > 0:
                 total_time += current_iter_time
             if i >= args.num_iters-1:
                 break
         averaged_time = total_time / (args.num_iters - 1 + 1e-9)
+
+    for i in range(args.num_layers):
+        torch.save(input_dict[i], f"../sparse_train_data/input_layer_{i}.pt")
+        torch.save(label_dict[i], f"../sparse_train_data/label_layer_{i}.pt")
         
     return averaged_time
 

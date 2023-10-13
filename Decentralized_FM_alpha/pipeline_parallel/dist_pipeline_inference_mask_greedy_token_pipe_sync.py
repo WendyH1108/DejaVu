@@ -9,7 +9,7 @@ from .dist_pipeline_inference_greedy_token_pipe_sync import (
 )
 from .share_prefix import SharePrefix
 from coordinator.http_coordinate_client import get_coordinator_client
-
+from pathlib import Path
 import os
 
 if "SPARSE_ATT" in os.environ:
@@ -420,7 +420,9 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
 
         self.share_prefix.clear()  # token generation do not need this
 
-    def _forward_compute_prompt_seq(self, index, seq, mask):
+    def _forward_compute_prompt_seq(self, index, seq, mask, input_dict = None, label_dict = None):
+        # Wendy TODO: check if this actually happens in this function
+        print("Dist_pipeline_inference_mask_greedy_token_pipe_sync")
         print("Compute prompt seq<", index, ">.")
         if self.pp_rank == 0:
             self.input_seq_emb[index] = self.layers["emb"](seq, mask=mask)
@@ -452,11 +454,30 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
             pass
         else:
             for layer_index in range(self.num_layers):
-                current_emb, caches[layer_index] = self.layers[
+                # if Path(f"../sparse_train_data/input_layer_{layer_index}.pt").exists():
+                #     loaded_data = torch.load(f"../sparse_train_data/input_layer_{layer_index}.pt")
+                #     torch.save(torch.cat((loaded_data,current_emb), dim = 0), f"../sparse_train_data/input_layer_{layer_index}.pt")
+                # else:
+                #     torch.save(current_emb, f"../sparse_train_data/input_layer_{layer_index}.pt")
+                if layer_index in input_dict.keys():
+                    input_dict[layer_index] = torch.cat((input_dict[layer_index],current_emb), dim = 0)
+                else:
+                    input_dict[layer_index] = current_emb
+
+                current_emb, caches[layer_index], attention_score = self.layers[
                     "block" + str(layer_index)
-                ](current_emb, caches[layer_index], mask=mask)
+                ](current_emb, caches[layer_index], mask=mask, layer_index = layer_index)
                 self.cached_attention[layer_index][index] = caches[layer_index]
 
+                if layer_index in label_dict.keys():
+                    label_dict[layer_index] = torch.cat((label_dict[layer_index],attention_score), dim = 0)
+                else:
+                    label_dict[layer_index] = attention_score
+
+                # print(input_dict[layer_index].shape)
+                # print(label_dict[layer_index].shape)
+
+        
         #'''
         # when disabled, this will do nothing
         current_emb = self.share_prefix.process_outputs(seq, mask, current_emb, caches)
@@ -468,6 +489,8 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
 
             if self.echo_prompt:
                 self._generate_echo_token_logprobs(index, indices=seq)
+
+        return input_dict, label_dict
 
     def _generate_echo_token_logprobs(self, index, indices):
         assert self.pp_rank == self.pipeline_group_size - 1
@@ -484,11 +507,11 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
         logprobs = torch.gather(z, -1, indices.unsqueeze(-1)).squeeze(-1)
         self.ret_tokens[
             index * self.micro_batch_size : (index + 1) * self.micro_batch_size,
-            : self.i_current_token,
+            1 : self.i_current_token,
         ] = original_indices
         self.ret_token_logprobs[
             index * self.micro_batch_size : (index + 1) * self.micro_batch_size,
-            1 : self.i_current_token,
+            1 : self.i_current_token-1,
         ] = logprobs
         if self.top_k_per_token > 0:
             logprobs, indices = z.topk(k=self.top_k_per_token, dim=-1)
@@ -625,7 +648,7 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
 
         return attention_mask
 
-    def forward_seq_pipeline_stage(self, input_data=None, attention_mask=None):
+    def forward_seq_pipeline_stage(self, input_data=None, attention_mask=None, input_dict = None, label_dict = None):
         if self.pp_rank == 0 or self.pp_rank == self.pipeline_group_size - 1:
             assert input_data is not None
             if self.pp_rank == 0 and self.generate_seq_length == 0:
@@ -649,13 +672,13 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
             if self.pp_rank == 0:  # Only send output to next node, do not receive
                 # Compute
                 self.profile_mark_forward_seq_comp_start(i)
-                self._forward_compute_prompt_seq(
-                    index=i, seq=input_seqs[i], mask=attention_mask[i]
+                input_dict, label_dict = self._forward_compute_prompt_seq(
+                    index=i, seq=input_seqs[i], mask=attention_mask[i], input_dict = input_dict, label_dict = label_dict
                 )
                 self.profile_mark_forward_seq_comp_end(i)
                 # Send
                 self.profile_mark_forward_seq_send_start(i)
-                self.comm.send(self.output_seq_emb[i], dst=self.post_node_rank)
+                # self.comm.send(self.output_seq_emb[i], dst=self.post_node_rank)
                 self.profile_mark_forward_seq_send_end(i)
             elif (
                 self.pp_rank == self.pipeline_group_size - 1
@@ -666,8 +689,8 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
                 self.profile_mark_forward_seq_recv_end(i)
                 # Compute
                 self.profile_mark_forward_seq_comp_start(i)
-                self._forward_compute_prompt_seq(
-                    index=i, seq=input_seqs[i], mask=attention_mask[i]
+                input_dict, label_dict = self._forward_compute_prompt_seq(
+                    index=i, seq=input_seqs[i], mask=attention_mask[i], input_dict = input_dict, label_dict = label_dict
                 )
                 self.profile_mark_forward_seq_comp_end(i)
             else:  # receive, compute, and send
@@ -677,8 +700,8 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
                 self.profile_mark_forward_seq_recv_end(i)
                 # Compute
                 self.profile_mark_forward_seq_comp_start(i)
-                self._forward_compute_prompt_seq(
-                    index=i, seq=input_seqs[i], mask=attention_mask[i]
+                input_dict, label_dict = self._forward_compute_prompt_seq(
+                    index=i, seq=input_seqs[i], mask=attention_mask[i], input_dict = input_dict, label_dict = label_dict
                 )
                 self.profile_mark_forward_seq_comp_end(i)
                 # Send
@@ -688,6 +711,8 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
 
         if self.enable_tidy_profiling:
             self.profile_seq_pipeline_stage()
+
+        return input_dict, label_dict
 
     def forward_new_token_pipeline_stage(self, attention_mask=None):
         if self.generate_seq_length == 0:
@@ -801,7 +826,7 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
         if self.enable_tidy_profiling:
             self.profile_token_pipeline_step(step)
 
-    def inference_batch(self, input_=None, output_=None, attention_mask=None):
+    def inference_batch(self, input_=None, output_=None, attention_mask=None, input_dict=None, label_dict=None):
         print(f"<inference_batch> rank-<{self.pp_rank}> Enter!")
         self.comm.barrier()
         print(f"<inference_batch> rank-<{self.pp_rank}> after first barrier!")
@@ -819,8 +844,8 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
 
         print(f"<inference_batch> rank-<{self.pp_rank}> enter computation!")
         with torch.no_grad():
-            self.forward_seq_pipeline_stage(
-                input_data=input_, attention_mask=attention_mask
+            input_dict, label_dict = self.forward_seq_pipeline_stage(
+                input_data=input_, attention_mask=attention_mask, input_dict=input_dict, label_dict=label_dict
             )
             print(
                 f"<inference_batch> rank-<{self.pp_rank}> forward_seq_pipeline_stage is done!"
@@ -889,4 +914,4 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
         )
         print("-------------------------------------------")
 
-        return iter_time
+        return iter_time, input_dict, label_dict

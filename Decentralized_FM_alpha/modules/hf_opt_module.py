@@ -10,6 +10,7 @@ from transformers.models.opt.modeling_opt import OPTDecoderLayer
 from transformers.models.opt.modeling_opt import OPTAttention as _OPTAttention
 from transformers.models.opt.modeling_opt import OPTLearnedPositionalEmbedding
 from transformers.models.opt.configuration_opt import OPTConfig as GPTConfig
+from pathlib import Path
 
 
 def _make_causal_mask(
@@ -220,15 +221,14 @@ class OPTAttention(_OPTAttention):
         attention_mask: Optional[torch.Tensor] = None,
         layer_head_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
+        layer_index = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """Input shape: Batch x Time x Channel"""
-
         # if key_value_states are provided this layer is used as a cross-attention layer
         # for the decoder
         is_cross_attention = key_value_states is not None
 
         bsz, tgt_len, _ = hidden_states.size()
-
         # get query proj
         query_states = self.q_proj(hidden_states) * self.scaling
         # get key, value proj
@@ -326,6 +326,20 @@ class OPTAttention(_OPTAttention):
         attn_probs = nn.functional.dropout(
             attn_weights, p=self.dropout, training=self.training
         )
+        # Save attention score
+        attention_score = torch.stack([
+                torch.var(x_i, dim = -1) for i, x_i in enumerate(torch.unbind(attn_probs, dim=0), 0)
+            ], dim=0)
+        attention_score = attention_score.reshape(1, attention_score.shape[0], attention_score.shape[1])
+        # if layer_index is not None:
+        #     attention_score = torch.stack([
+        #         x_i.var() for i, x_i in enumerate(torch.unbind(attn_probs, dim=0), 0)
+        #     ], dim=0)
+        #     if Path(f"../sparse_train_data/label_layer_{layer_index}.pt").exists():
+        #         loaded_data = torch.load(f"../sparse_train_data/label_layer_{layer_index}.pt")
+        #         torch.save(torch.cat((loaded_data,attention_score), dim = 0), f"../sparse_train_data/label_layer_{layer_index}.pt")
+        #     else:
+        #         torch.save(attention_score, f"../sparse_train_data/label_layer_{layer_index}.pt")
 
         attn_output = torch.bmm(attn_probs, value_states)
 
@@ -344,7 +358,7 @@ class OPTAttention(_OPTAttention):
 
         attn_output = self.out_proj(attn_output)
 
-        return attn_output, attn_weights_reshaped, past_key_value
+        return attn_output, attn_weights_reshaped, past_key_value, attention_score
 
 
 class GPTBlock(OPTDecoderLayer):
@@ -406,7 +420,7 @@ class GPTBlock(OPTDecoderLayer):
 
         return module
 
-    def forward(self, x: torch.Tensor, layer_past=None, mask=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, layer_past=None, mask=None, layer_index=None) -> torch.Tensor:
         if layer_past is not None:
             past_length = layer_past[0].size(2)
         else:
@@ -447,10 +461,11 @@ class GPTBlock(OPTDecoderLayer):
         # ###
 
         # Self Attention
-        hidden_states, _, present = self.self_attn(
+        hidden_states, _, present, attention_score= self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             past_key_value=layer_past,
+            layer_index = layer_index
         )
         hidden_states = residual + hidden_states
 
@@ -503,7 +518,7 @@ class GPTBlock(OPTDecoderLayer):
         # ###
         hidden_states = hidden_states.view(hidden_states_shape)
 
-        return hidden_states, present
+        return hidden_states, present, attention_score
 
 
 class GPTLMHead(nn.Module):

@@ -1,0 +1,8 @@
+Namespace(D=1000, L=0, batch_size=1024, dataset='c4', epochs=20, k=0.3, lr=0.0001, model='13b')
+======================================== Layer 0 ========================================
+Reading query from ../sparse_train_data/input_layer_0.pt
+Reading attention label from ../sparse_train_data/label_layer_0.pt
+87
+Query shape: (87, 2047, 5120), Label shape: (87, 40)
+# training data: 82, # test data: 4
+Start Training

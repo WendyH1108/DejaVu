@@ -454,6 +454,7 @@ class GPTBlock(OPTDecoderLayer):
             )
             predictor_path = os.environ["SPRARSE_PATH"]
             module.self_attn.topk = float(os.environ["ATTN_TOPK_1"])
+            # Wendy TODO: need to change path
             try:
                 predictor_path = glob.glob(
                     f"{predictor_path}/c4_att_layer{layer_index}*.pt"
