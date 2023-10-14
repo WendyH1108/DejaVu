@@ -13,3 +13,5 @@
 /sparse_train_data/*
 /models/*
 *.jsonl
+/predictors/*
+/new_predictor/__pycache__

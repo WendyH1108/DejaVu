@@ -94,10 +94,12 @@ def main():
             + ".json"
         )
         if args.profiling == "tidy_profiling":
+            print("start tidy_profiling")
             distributed_inference_mask_iter(args, pipe, device, request_processor)
             # distributed_inference_foo_iter(args, pipe, device, request_processor)
             pipe.export_profiling_result(filename=trace_file)
         elif args.profiling == "pytorch_profiling":
+            print("start pytorch_profiling")
             with profiler.profile(profile_memory=True, use_cuda=args.use_cuda) as prof:
                 distributed_inference_mask_iter(args, pipe, device, request_processor)
             print(prof.key_averages().table())

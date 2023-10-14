@@ -216,7 +216,8 @@ class OPTAttention(_OPTAttention):
 
         with torch.no_grad():
             _logit = self.predictor(hidden_states.reshape(-1, self.embed_dim).float())
-
+            print("logit shape", _logit.shape)
+            print("top k is", int(self.topk))
             _, _top_k_indices = _logit.topk(int(self.topk), dim=1)
             _top_k_indices = _top_k_indices[:, : int(self.topk)].reshape(
                 bsz, tgt_len, int(self.topk)
@@ -447,7 +448,7 @@ class GPTBlock(OPTDecoderLayer):
             module.predictor = None
 
         # initialize and loading attn predictor
-        if 5 <= layer_index <= 33 or 63 <= layer_index < 95:
+        if 0 <= layer_index <= 40 or 63 <= layer_index < 95:
             module.self_attn.predictor = nn.Sequential(
                 nn.Linear(module.embed_dim, 1000, bias=None),
                 nn.Linear(1000, config.num_attention_heads, bias=None),
@@ -455,10 +456,12 @@ class GPTBlock(OPTDecoderLayer):
             predictor_path = os.environ["SPRARSE_PATH"]
             module.self_attn.topk = float(os.environ["ATTN_TOPK_1"])
             # Wendy TODO: need to change path
+            # predictor_path = f"{predictor_path}/c4_att_k_0.3_layer{layer_index}*.pt"
+            # print(predictor_path)
+            # exit(0)
             try:
-                predictor_path = glob.glob(
-                    f"{predictor_path}/c4_att_layer{layer_index}*.pt"
-                )[0]
+                predictor_path = f"{predictor_path}/c4_att_k_0.3_layer{layer_index}.pt"
+                
                 print(f"loading attnetion sparse predictor from {predictor_path}")
                 module.self_attn.predictor.load_state_dict(torch.load(predictor_path))
             except:

@@ -5,6 +5,7 @@ import random
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from trainer_att import train
+import os
 
 DATA = {
     "175b": {
@@ -67,21 +68,87 @@ class BasicDataset(Dataset):
             exit()
         return x, y
 
+
+class CustomDataset(Dataset):
+    def __init__(self, X, Y, n, train):
+        self.X = X
+        self.Y = Y 
+        self.n = n
+        self.train = train
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, idx):
+        if self.train:
+            x = torch.Tensor(self.X[idx])
+            y = torch.Tensor(self.Y[idx])
+        else:
+            x = torch.Tensor(self.X[-idx])
+            y = torch.Tensor(self.Y[-idx])
+        if y.sum()== 0:
+            print("all zero y")
+            exit()
+        return x, y
+
+class CustomDataset(Dataset):
+    def __init__(self, X, Y, n, train):
+        self.X = X
+        self.Y = Y 
+        self.n = n
+        self.train = train
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, idx):
+        if self.train:
+            x = torch.Tensor(self.X[idx])
+            y = torch.Tensor(self.Y[idx])
+        else:
+            x = torch.Tensor(self.X[-idx])
+            y = torch.Tensor(self.Y[-idx])
+        if y.sum()== 0:
+            print("all zero y")
+            exit()
+        return x, y
+
 # Wendy TODO: need to change to the layer inference data
 def get_data(args, l):
-    path = f"../sparse_train_data/input_layer_{l}.pt"
-    print(f"Reading query from {path}")
+    num = 0
+    while True:
+        path = f"../sparse_train_data/input_layer_{l}_{num}.pt"
+        if not os.path.exists(path):
+            break
 
-    layer = torch.load(path)
-    query = np.array(layer.cpu(),dtype="float16")
+        # --------------load input--------------
+        print(f"Reading query from {path}")
 
-    path = f"../sparse_train_data/label_layer_{l}.pt"
-    print(f"Reading attention label from {path}")
+        layer = torch.load(path)
+        if num == 0:
+            query = layer
+        else:
+            query = torch.cat((query, layer), dim = 0)
+        
+        # --------------load label--------------
+        path = f"../sparse_train_data/label_layer_{l}_{num}.pt"
+        print(f"Reading attention label from {path}")
+        layer = torch.load(path)
+        
+        # label = np.array(layer.cpu(),dtype="float16")
+        if num == 0:
+            # label = np.reshape(label, (int(label.shape[0]/CONFIG[args.model]['h']), CONFIG[args.model]['h']))
+            label = layer.view(layer.shape[0], layer.shape[2], layer.shape[1])
+        else:
+            label = torch.cat((label, layer.view(layer.shape[0], layer.shape[2], layer.shape[1])), dim = 0)
+        
+        num += 1
 
-    layer = torch.load(path)
-    label = np.array(layer.cpu(),dtype="float16")
-    label = np.reshape(label, (int(label.shape[0]/CONFIG[args.model]['h']), CONFIG[args.model]['h']))
-    
+    query = np.array(query.cpu(),dtype="float16")
+    label = np.array(label.cpu(),dtype="float16")
+
+    # print("query shape ", query.shape)
+    # print("label shape ", label.shape)
     num_valid = (label.sum(-1) > 0).sum()
     print(num_valid)
     return  query[:num_valid], label[:num_valid]
