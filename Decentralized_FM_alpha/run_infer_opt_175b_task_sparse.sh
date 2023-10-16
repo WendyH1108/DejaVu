@@ -1,5 +1,5 @@
-file=../c4_train.jsonl
-output_file=../sparse_c4_output_wsc.jsonl
+file=../wsc.jsonl
+output_file=../test_output.jsonl
 
 
 echo "start running ${file}"
@@ -31,6 +31,6 @@ ARGS="--model-name ../models/facebook_opt_13b \
 --output-path ${output_file}"
 
 (trap 'kill 0' SIGINT; \
-python dist_inference_runner.py $(echo ${ARGS}) --cuda-id 0 --rank 0 \
+python dist_inference_runner.py $(echo ${ARGS}) --cuda-id 5 --rank 0 \
     & \
 wait)

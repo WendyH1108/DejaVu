@@ -78,7 +78,10 @@ def main():
     request_processor = get_request_processor(args)
     request_processor.set_arguments(args)
 
-    pipe = get_pp_inference_module(args, device)
+    general_hmask = torch.load("../hmask_winogrande.pt")
+    general_val, general_idx = general_hmask[0].var(dim=1).topk(20)
+    # general_idx = None
+    pipe = get_pp_inference_module(args, device, general_mask = general_idx)
 
     if args.profiling == "no-profiling":
         distributed_inference_mask_iter(args, pipe, device, request_processor)

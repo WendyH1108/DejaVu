@@ -50,6 +50,23 @@ def distributed_inference_mask_iter(args, pipeline, device, request_processor,
     total_time = 0
     print("args.batch_size ", args.batch_size)
 
+    general_hmask = torch.load("../hmask.pt")
+    general_val, general_idx = general_hmask[0].var(dim=1).topk(20)
+    # pipeline.general_mask(general_idx)
+
+    # _, top_k_indices = general_hmask.topk(int(args.k), dim=1)
+    # top_k_indices = top_k_indices[:, : int(args.k)].reshape(
+    #             bsz, tgt_len, int(args.k)
+    #         )
+    # top_k_indices = top_k_indices.transpose(1, 2)
+    # head_mask = torch.zeros(
+    #             bsz,
+    #             self.num_heads,
+    #             tgt_len,
+    #             device=device,
+    #             dtype=hidden_states.dtype,
+    # ).scatter_(1, top_k_indices, 1)
+
     # for i in range(args.num_layers):
     #     input_dict
     if get_pipeline_parallel_rank() == 0 and get_pipeline_parallel_rank() != pipeline.pipeline_group_size - 1:
@@ -116,7 +133,7 @@ def distributed_inference_mask_iter(args, pipeline, device, request_processor,
                 break
         averaged_time = total_time / (args.num_iters - 1 + 1e-9)
 
-        
+    # torch.save(pipeline.total_hmask, "../hmask_winogrande.pt")
     return averaged_time
 
 

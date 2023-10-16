@@ -10,8 +10,8 @@ from .dist_pipeline_inference_mask_greedy_token_pipe_sync import DistGreedyInfer
 
 class DistSampleInferenceMaskTokenPipeSync(DistGreedyInferenceMaskTokenPipeSync):
     
-    def __init__(self, args, device, rank=None, be_coordinated=False):
-        super().__init__(args, device, rank=rank, be_coordinated=be_coordinated)
+    def __init__(self, args, device, rank=None, be_coordinated=False, general_mask=None):
+        super().__init__(args, device, rank=rank, be_coordinated=be_coordinated, general_mask=general_mask)
         self.update_processors(args)
         
     def update_processors(self, args):

@@ -15,8 +15,8 @@ def dump_jsonl(data, output_path, append=False):
 
 
 dataset = load_dataset("c4", "en", split="validation", streaming=True)
-dataset = dataset.shuffle(buffer_size=10000, seed=42)
-path = "c4_valid.jsonl"
+dataset = dataset.shuffle(buffer_size=1, seed=42)
+path = "../../c4_valid.jsonl"
 
 for idx, doc in enumerate(tqdm(dataset)):
     data = {
@@ -24,7 +24,7 @@ for idx, doc in enumerate(tqdm(dataset)):
         "echo": True,
         "logprobs": 1,
         "max_tokens": 0,
-        "model": "opt-175b",
+        "model": "opt-13b",
         "n": 1,
         "prompt": doc["text"],
         "request_type": "language-model-inference",
@@ -32,7 +32,8 @@ for idx, doc in enumerate(tqdm(dataset)):
         "temperature": 0,
         "top_p": 1,
     }
+    print(idx)
     dump_jsonl([data], path, append=True)
-    if idx == 10000:
+    if idx == 200:
         print(idx)
-        exit()
+        exit(0)

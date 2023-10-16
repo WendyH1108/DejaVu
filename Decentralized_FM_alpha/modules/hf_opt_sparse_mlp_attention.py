@@ -179,13 +179,14 @@ class OPTAttention(_OPTAttention):
         is_decoder: bool = False,
         bias: bool = True,
         device="cpu",
+        general_mask = None
     ):
         super(_OPTAttention, self).__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.dropout = dropout
         self.head_dim = embed_dim // num_heads
-
+        self.general_mask = general_mask
         if (self.head_dim * num_heads) != self.embed_dim:
             raise ValueError(
                 f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim}"
@@ -198,6 +199,7 @@ class OPTAttention(_OPTAttention):
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias, device=device)
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias, device=device)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, device=device)
+        self.total_hmask = None
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return (
@@ -205,6 +207,24 @@ class OPTAttention(_OPTAttention):
             .transpose(1, 2)
             .contiguous()
         )
+    
+    def quantize_weight_per_channel_absmax(self, w, n_bits=16):
+        # w: (out_features, in_features)
+        scales = w.abs().max(dim=-1, keepdim=True)[0]
+        q_max = 2**(n_bits-1)-1
+        scales.clamp_(min=1e-5).div_(q_max)
+        # w.div_(scales).round_().mul_(scales)
+        w.div_(scales).mul_(scales)
+        if n_bits == 0:
+            return torch.zeros_like(w)
+        return w
+    
+    def prepare_general_mask(self, attn_output):
+        for head_idx in range(attn_output.shape[1]):
+            if head_idx not in self.general_mask:
+                attn_output[0][head_idx] = self.quantize_weight_per_channel_absmax(attn_output[0][head_idx])
+        return attn_output
+
 
     def prepare_head_mask(
         self,
@@ -216,8 +236,6 @@ class OPTAttention(_OPTAttention):
 
         with torch.no_grad():
             _logit = self.predictor(hidden_states.reshape(-1, self.embed_dim).float())
-            print("logit shape", _logit.shape)
-            print("top k is", int(self.topk))
             _, _top_k_indices = _logit.topk(int(self.topk), dim=1)
             _top_k_indices = _top_k_indices[:, : int(self.topk)].reshape(
                 bsz, tgt_len, int(self.topk)
@@ -230,6 +248,7 @@ class OPTAttention(_OPTAttention):
                 device=hidden_states.device,
                 dtype=hidden_states.dtype,
             ).scatter_(1, _top_k_indices, 1)
+
         return _head_mask
 
     def forward(
@@ -246,8 +265,9 @@ class OPTAttention(_OPTAttention):
 
         # get activated head from sparsity predictor
         hmask = None
-        if previous_emb != None and self.predictor != None:
-            hmask = self.prepare_head_mask(previous_emb)
+        # if previous_emb != None and self.predictor != None:
+        #     hmask = self.prepare_head_mask(previous_emb)
+
         # if key_value_states are provided this layer is used as a cross-attention layer
         # for the decoder
         is_cross_attention = key_value_states is not None
@@ -256,6 +276,7 @@ class OPTAttention(_OPTAttention):
 
         # get query proj
         query_states = self.q_proj(hidden_states) * self.scaling
+
         # get key, value proj
         if is_cross_attention and past_key_value is not None:
             # reuse k,v, cross_attentions
@@ -285,7 +306,7 @@ class OPTAttention(_OPTAttention):
             # can concat previous decoder key/value_states to current projected key/value_states (third "elif" case)
             # if encoder bi-directional self-attention `past_key_value` is always `None`
             past_key_value = (key_states, value_states)
-
+        
         proj_shape = (bsz * self.num_heads, -1, self.head_dim)
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
         key_states = key_states.view(*proj_shape)
@@ -363,8 +384,14 @@ class OPTAttention(_OPTAttention):
 
         attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
 
-        if hmask is not None:
+        if hmask != None and self.general_mask == None:
+            if self.total_hmask is None:
+                self.total_hmask = torch.zeros(hmask.shape[0], hmask.shape[1], hmask.shape[2])
+            self.total_hmask = self.total_hmask + hmask.to("cpu")
             attn_output = hmask.unsqueeze(-1) * attn_output
+        elif self.general_mask != None:
+            attn_output = self.prepare_general_mask(attn_output)
+            # attn_output = self.general_mask.unsqueeze(-1) * attn_output
 
         attn_output = attn_output.transpose(1, 2)
 
@@ -377,7 +404,7 @@ class OPTAttention(_OPTAttention):
 
 
 class GPTBlock(OPTDecoderLayer):
-    def __init__(self, config, *args, use_checkpoint=True, device="cpu", **kargs):
+    def __init__(self, config, *args, use_checkpoint=True, general_mask = None, device="cpu", **kargs):
         # super().__init__(config=config, *args, **kargs)
         super(OPTDecoderLayer, self).__init__()
         self.embed_dim = config.hidden_size
@@ -387,6 +414,7 @@ class GPTBlock(OPTDecoderLayer):
             dropout=config.attention_dropout,
             is_decoder=True,
             device=device,
+            general_mask = general_mask
         )
         self.do_layer_norm_before = config.do_layer_norm_before
         self.dropout = config.dropout
@@ -407,9 +435,10 @@ class GPTBlock(OPTDecoderLayer):
             device=torch.device("cuda"), priority=-1
         )
         self.event_done = torch.cuda.Event(enable_timing=False, blocking=False)
+        self.device = device
 
     @classmethod
-    def from_pretrained(cls, model_path, config=None, layer_index=None):
+    def from_pretrained(cls, model_path, config=None, layer_index=None, general_mask = None):
         assert layer_index is not None
         if config is None:
             config = GPTConfig.from_pretrained(model_path)
@@ -448,6 +477,7 @@ class GPTBlock(OPTDecoderLayer):
             module.predictor = None
 
         # initialize and loading attn predictor
+        module.self_attn.general_mask = general_mask
         if 0 <= layer_index <= 40 or 63 <= layer_index < 95:
             module.self_attn.predictor = nn.Sequential(
                 nn.Linear(module.embed_dim, 1000, bias=None),

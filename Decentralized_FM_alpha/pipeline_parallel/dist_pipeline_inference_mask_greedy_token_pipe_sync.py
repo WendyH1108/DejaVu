@@ -11,6 +11,7 @@ from .share_prefix import SharePrefix
 from coordinator.http_coordinate_client import get_coordinator_client
 from pathlib import Path
 import os
+from modules.hf_opt_sparse_mlp_attention import OPTAttention
 
 if "SPARSE_ATT" in os.environ:
     SPARSE_ATT = True
@@ -22,6 +23,29 @@ if "SPARSE" in os.environ:
 else:
     SPARSE = False
 
+def quantize_weight_per_channel_absmax(w, n_bits=8):
+    # w: (out_features, in_features)
+    scales = w.abs().max(dim=-1, keepdim=True)[0]
+    q_max = 2**(n_bits-1)-1
+    scales.clamp_(min=1e-5).div_(q_max)
+    w.div_(scales).round_().mul_(scales)
+    return w
+
+def prepare_global_mask(global_mask, topk, block):
+    bsz, tgt_len = block.embed_dim
+    num_heads = block.self_attn.num_heads
+    _, top_k_indices = global_mask.topk(int(topk), dim=1)
+    top_k_indices = top_k_indices[:, : int(topk)].reshape(
+                    bsz, tgt_len, int(topk)
+                )
+    top_k_indices = top_k_indices.transpose(1, 2)
+    head_mask = torch.zeros(
+        bsz,
+        num_heads,
+        tgt_len,
+        device=block.device,
+    ).scatter_(1, top_k_indices, 1)
+    return head_mask
 
 class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
     r"""
@@ -32,7 +56,7 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
         a group of events to check if computation finishes in the forward propagation.
     """
 
-    def __init__(self, args, device, rank=None, be_coordinated=False):
+    def __init__(self, args, device, rank=None, be_coordinated=False, general_mask = None):
         if be_coordinated:
             self.coord_client = get_coordinator_client()
         else:
@@ -50,9 +74,10 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
         self.max_layers = args.max_layers
         self._layer_begin = args.num_layers * get_pipeline_parallel_rank()
         self._layer_end = args.num_layers * (get_pipeline_parallel_rank() + 1)
-
+        self.general_mask = general_mask
         ##########
         self.stop = args.stop
+        self.total_hmask = None
         # self.stop = None
 
         if self.stop is not None:
@@ -295,7 +320,7 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
             return config.hidden_size
         else:
             raise Exception(f"unknown model type {self.model_type}")
-
+    
     def _create_layers(self):
         if self.model_type == "gpt2":
             from modules.hf_gpt2_module import GPTEmbeddings, GPTBlock, GPTLMHead
@@ -312,6 +337,7 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
                 GPTEmbeddings,
                 GPTBlock,
                 GPTLMHead,
+                OPTAttention
             )
         elif self.model_type == "yalm":
             from modules.yalm_module import GPTEmbeddings, GPTBlock, GPTLMHead
@@ -337,14 +363,29 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
                 self.num_layers = layer_index
                 break
             print(f"loading layer {global_layer_index}")
-            self.layers["block" + str(layer_index)] = (
-                GPTBlock.from_pretrained(
-                    self.model_name, layer_index=global_layer_index
+            # print(self.general_mask)
+            if self.model_type == "opt-ml-att-sparse":
+                self.layers["block" + str(layer_index)] = (
+                    GPTBlock.from_pretrained(
+                        self.model_name, layer_index=global_layer_index, general_mask = self.general_mask
+                    )
+                    .to(self.dtype)
+                    .eval()
+                    .to(self.device)
                 )
-                .to(self.dtype)
-                .eval()
-                .to(self.device)
-            )
+                # Wendy TODO
+                
+                # self.layers["block" + str(layer_index)].self_attn.k_proj.weight
+                # exit(0)
+            else:
+                self.layers["block" + str(layer_index)] = (
+                    GPTBlock.from_pretrained(
+                        self.model_name, layer_index=global_layer_index
+                    )
+                    .to(self.dtype)
+                    .eval()
+                    .to(self.device)
+                )
 
             if self.coord_client:
                 self.coord_client.update_status(
@@ -913,5 +954,12 @@ class DistGreedyInferenceMaskTokenPipeSync(DistGreedyInferenceTokePipeSync):
             )
         )
         print("-------------------------------------------")
-
+        if self.model_type == "opt-ml-att-sparse" and self.general_mask == None:
+            for layer_index in range(self.num_layers):
+                # if isinstance(self.layers["block" + str(layer_index)], OPTAttention):
+                if self.layers["block" + str(layer_index)].self_attn.total_hmask != None:
+                    if self.total_hmask == None:
+                        self.total_hmask = self.layers["block" + str(layer_index)].self_attn.total_hmask
+                    else:
+                        self.total_hmask += self.layers["block" + str(layer_index)].self_attn.total_hmask
         return iter_time, input_dict, label_dict

@@ -26,7 +26,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.model_type == "opt":
-        os.environ["MODEL_NAME"] = "facebook/opt-66b"
+        os.environ["MODEL_NAME"] = "facebook/opt-13b"
     elif args.model_type == "bloom":
         os.environ["MODEL_NAME"] = "bigscience/bloom"
     else:
@@ -50,7 +50,6 @@ if __name__ == "__main__":
                     if "result" not in item:
                         continue
                     result = item["result"]
-
                     self.results[json_to_key(request)] = result
 
             print(f"{len(self.results)} items in the cache")
@@ -77,10 +76,8 @@ if __name__ == "__main__":
                 }
 
                 key = json_to_key(request)
-
                 correct = True
-
-                if key in self.results:
+                if key in self.results.keys():
                     result = self.results[key]
 
                     token_logprobs = result["choices"][0]["logprobs"]["token_logprobs"]
@@ -163,6 +160,5 @@ if __name__ == "__main__":
         args.num_fewshot,
         args.num_data,
     )
-
     dumped = json.dumps(results, indent=2)
     print(dumped)

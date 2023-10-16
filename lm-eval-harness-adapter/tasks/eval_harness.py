@@ -15,7 +15,7 @@ tokenizer = None
 
 def process_init():
     global tokenizer
-    model_name = os.environ.get("MODEL_NAME", "facebook/opt-1.3b")
+    model_name = os.environ.get("MODEL_NAME", "facebook/opt-13b")
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
     tokenizer.add_bos_token = False
 
@@ -103,5 +103,4 @@ class EvalHarnessAdaptor(LM):
 
             for loss, correct in zip(out["mask_loss"], out["each_correct"]):
                 output.append((float(-loss), bool(correct)))
-
         return output
